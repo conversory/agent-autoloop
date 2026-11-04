@@ -35,10 +35,13 @@ function computer({ node = "real" }: { node?: "real" | "old" | "local" | "none" 
   const person = path.join(dir, `person-${++people}`);
   const windowsApps = path.join(person, "localappdata", "Microsoft", "WindowsApps");
   mkdirSync(windowsApps, { recursive: true });
+  // Only the folders the test really needs from this machine's PATH — the one with cmd.exe, so the child shell itself
+  // can be started, and the one with git.exe, so a real clone can happen. Everything else real is left out: Windows
+  // can't tell a writable folder from access(), and a broken installer must never drop a shim somewhere real.
   const system = (process.env.PATH ?? "")
     .split(path.delimiter)
     .filter(Boolean)
-    .filter((place) => !existsSync(path.join(place, "node.exe")));
+    .filter((place) => existsSync(path.join(place, "cmd.exe")) || existsSync(path.join(place, "git.exe")));
   let early: string[] = [path.dirname(process.execPath)];
   let pathnode = "";
   if (node === "old") {

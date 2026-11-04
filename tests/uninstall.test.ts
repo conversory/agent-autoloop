@@ -26,6 +26,11 @@ import { after, test } from "node:test";
 
 const repo = join(import.meta.dirname, "..");
 const dir = realpathSync(mkdtempSync(join(tmpdir(), "agent-autoloop-uninstall-")));
+// Uninstall was run for real on Windows — service down, shim gone, data kept — and its service side is in
+// windows-service.test.ts. What's tested here is the macOS and Linux shape: launchctl and systemctl stand-ins, symlink
+// links, and a HOME this file fences itself off with that Windows' Node doesn't read, so run there it would reach the
+// real one.
+const unix = process.platform !== "win32";
 const children: ChildProcess[] = [];
 after(() => {
   for (const child of children) child.kill("SIGKILL");
@@ -104,31 +109,35 @@ function linksAreGone(it: Install) {
   assert.ok(!isThere(skillLink(it)));
 }
 
-test("the install it makes is what it takes away: service stopped, links gone, all data always kept", () => {
-  const it = install();
-  assert.ok(lstatSync(skillLink(it)).isSymbolicLink(), "init linked the Skill");
-  const service =
-    process.platform === "darwin"
-      ? join(it.person, "Library", "LaunchAgents", "agent-autoloop.plist")
-      : join(it.person, ".config", "systemd", "user", "agent-autoloop.service");
-  mkdirSync(join(service, ".."), { recursive: true });
-  writeFileSync(service, `<string>${it.program}</string>`);
+test(
+  "the install it makes is what it takes away: service stopped, links gone, all data always kept",
+  { skip: !unix },
+  () => {
+    const it = install();
+    assert.ok(lstatSync(skillLink(it)).isSymbolicLink(), "init linked the Skill");
+    const service =
+      process.platform === "darwin"
+        ? join(it.person, "Library", "LaunchAgents", "agent-autoloop.plist")
+        : join(it.person, ".config", "systemd", "user", "agent-autoloop.service");
+    mkdirSync(join(service, ".."), { recursive: true });
+    writeFileSync(service, `<string>${it.program}</string>`);
 
-  const done = it.run(["uninstall", "--yes"]);
-  assert.equal(done.status, 0, done.stderr);
-  const calls = readFileSync(it.called, "utf8");
-  if (process.platform === "darwin")
-    assert.match(calls, new RegExp(`launchctl bootout gui/${process.getuid!()}/agent-autoloop$`, "m"));
-  else assert.match(calls, /^systemctl --user disable --now agent-autoloop$/m);
-  assert.ok(!existsSync(service));
-  linksAreGone(it);
-  ownThingsAreThere(it);
-  assert.ok(existsSync(join(it.hub, "config.json")), "nobody was there to say yes, so the data stays");
-  assert.match(done.stdout, /规则、密钥和记录还留在/);
-  assert.ok(!existsSync(it.app), "the installed code is removed");
-});
+    const done = it.run(["uninstall", "--yes"]);
+    assert.equal(done.status, 0, done.stderr);
+    const calls = readFileSync(it.called, "utf8");
+    if (process.platform === "darwin")
+      assert.match(calls, new RegExp(`launchctl bootout gui/${process.getuid!()}/agent-autoloop$`, "m"));
+    else assert.match(calls, /^systemctl --user disable --now agent-autoloop$/m);
+    assert.ok(!existsSync(service));
+    linksAreGone(it);
+    ownThingsAreThere(it);
+    assert.ok(existsSync(join(it.hub, "config.json")), "nobody was there to say yes, so the data stays");
+    assert.match(done.stdout, /规则、密钥和记录还留在/);
+    assert.ok(!existsSync(it.app), "the installed code is removed");
+  },
+);
 
-test("--yes skips confirmation and preserves all data", () => {
+test("--yes skips confirmation and preserves all data", { skip: !unix }, () => {
   const it = install();
   const done = it.run(["uninstall", "--yes"]);
   assert.equal(done.status, 0, done.stderr);
@@ -139,7 +148,7 @@ test("--yes skips confirmation and preserves all data", () => {
   assert.ok(existsSync(it.person));
 });
 
-test("at a terminal only confirming removes the program, and every answer preserves data", () => {
+test("at a terminal only confirming removes the program, and every answer preserves data", { skip: !unix }, () => {
   const answering = (it: Install, words: string) =>
     spawnSync(
       process.execPath,
@@ -168,50 +177,58 @@ test("at a terminal only confirming removes the program, and every answer preser
   }
 });
 
-test("a hub started by hand is stopped too; a process that only has the old number isn't", async () => {
-  const it = install();
-  const asIfUp = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "agent-autoloop", "up"], {
-    stdio: "ignore",
-  });
-  children.push(asIfUp);
-  writeFileSync(join(it.hub, "up.pid"), String(asIfUp.pid));
-  const stopped = new Promise((resolve) => asIfUp.on("exit", resolve));
-  assert.equal(it.run(["uninstall", "--yes"]).status, 0);
-  await stopped;
+test(
+  "a hub started by hand is stopped too; a process that only has the old number isn't",
+  { skip: !unix },
+  async () => {
+    const it = install();
+    const asIfUp = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", "agent-autoloop", "up"], {
+      stdio: "ignore",
+    });
+    children.push(asIfUp);
+    writeFileSync(join(it.hub, "up.pid"), String(asIfUp.pid));
+    const stopped = new Promise((resolve) => asIfUp.on("exit", resolve));
+    assert.equal(it.run(["uninstall", "--yes"]).status, 0);
+    await stopped;
 
-  const other = install();
-  const someoneElse = spawn("/bin/sleep", ["30"], { stdio: "ignore" });
-  children.push(someoneElse);
-  writeFileSync(join(other.hub, "up.pid"), String(someoneElse.pid));
-  assert.equal(other.run(["uninstall", "--yes"]).status, 0);
-  assert.equal(someoneElse.exitCode, null);
-  assert.equal(someoneElse.signalCode, null);
-});
+    const other = install();
+    const someoneElse = spawn("/bin/sleep", ["30"], { stdio: "ignore" });
+    children.push(someoneElse);
+    writeFileSync(join(other.hub, "up.pid"), String(someoneElse.pid));
+    assert.equal(other.run(["uninstall", "--yes"]).status, 0);
+    assert.equal(someoneElse.exitCode, null);
+    assert.equal(someoneElse.signalCode, null);
+  },
+);
 
-test("AGENT_AUTOLOOP_HOME can name anything: a folder this program didn't make, or the user's home, isn't deleted", () => {
-  const it = install();
-  const projects = join(it.person, "projects");
-  mkdirSync(projects);
-  writeFileSync(join(projects, "thesis.txt"), "years of work");
-  const inFolder = it.run(["uninstall", "--yes"], { AGENT_AUTOLOOP_HOME: projects });
-  assert.equal(inFolder.status, 0, inFolder.stderr);
-  assert.equal(readFileSync(join(projects, "thesis.txt"), "utf8"), "years of work");
-  assert.ok(existsSync(projects));
+test(
+  "AGENT_AUTOLOOP_HOME can name anything: a folder this program didn't make, or the user's home, isn't deleted",
+  { skip: !unix },
+  () => {
+    const it = install();
+    const projects = join(it.person, "projects");
+    mkdirSync(projects);
+    writeFileSync(join(projects, "thesis.txt"), "years of work");
+    const inFolder = it.run(["uninstall", "--yes"], { AGENT_AUTOLOOP_HOME: projects });
+    assert.equal(inFolder.status, 0, inFolder.stderr);
+    assert.equal(readFileSync(join(projects, "thesis.txt"), "utf8"), "years of work");
+    assert.ok(existsSync(projects));
 
-  writeFileSync(join(it.person, "config.json"), "{}");
-  assert.equal(it.run(["uninstall", "--yes"], { AGENT_AUTOLOOP_HOME: it.person }).status, 0);
-  assert.ok(existsSync(join(it.person, "config.json")));
-  assert.ok(existsSync(join(it.hub, "config.json")));
-});
+    writeFileSync(join(it.person, "config.json"), "{}");
+    assert.equal(it.run(["uninstall", "--yes"], { AGENT_AUTOLOOP_HOME: it.person }).status, 0);
+    assert.ok(existsSync(join(it.person, "config.json")));
+    assert.ok(existsSync(join(it.hub, "config.json")));
+  },
+);
 
-test("with nothing installed it still finishes, and says so plainly", () => {
+test("with nothing installed it still finishes, and says so plainly", { skip: !unix }, () => {
   const it = install();
   const nothing = it.run(["uninstall", "--yes"], { AGENT_AUTOLOOP_HOME: join(it.person, "never") });
   assert.equal(nothing.status, 0, nothing.stderr);
   assert.match(nothing.stdout, /卸载好了/);
 });
 
-test("without a terminal uninstall asks for --yes before removing anything", () => {
+test("without a terminal uninstall asks for --yes before removing anything", { skip: !unix }, () => {
   const it = install();
   const done = it.run(["uninstall"]);
   assert.notEqual(done.status, 0);
@@ -220,7 +237,7 @@ test("without a terminal uninstall asks for --yes before removing anything", () 
   assert.ok(isThere(join(it.person, ".local", "bin", "agent-autoloop")));
 });
 
-test("an unrelated service file with the same name is left running and untouched", () => {
+test("an unrelated service file with the same name is left running and untouched", { skip: !unix }, () => {
   const it = install();
   const service =
     process.platform === "darwin"

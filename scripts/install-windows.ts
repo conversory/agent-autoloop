@@ -1,7 +1,7 @@
 // The Windows half of install.sh: the same steps in the same order, with what Windows brings — git, `where`, cmd — and
 // a Node 24 this install keeps in the user's own folders, so the machine's own Node stays as it was.
 import { spawnSync } from "node:child_process";
-import { accessSync, constants, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 
@@ -87,14 +87,14 @@ function placeCmd(place: string) {
     .filter(Boolean)
     .map((each) => path.resolve(each));
   if (!place || !path.isAbsolute(place) || !onPath.includes(path.resolve(place))) return false;
+  const mine = path.join(place, "agent-autoloop.cmd");
+  if (existsSync(mine) && !readFileSync(mine, "utf8").includes(PROGRAM)) return false;
+  // Windows can't tell a writable folder from access(), so the honest check is the write itself.
   try {
-    accessSync(place, constants.W_OK);
+    writeFileSync(mine, `@echo off\r\n"${process.execPath}" --disable-warning=ExperimentalWarning "${PROGRAM}" %*\r\n`);
   } catch {
     return false;
   }
-  const mine = path.join(place, "agent-autoloop.cmd");
-  if (existsSync(mine) && !readFileSync(mine, "utf8").includes(PROGRAM)) return false;
-  writeFileSync(mine, `@echo off\r\n"${process.execPath}" --disable-warning=ExperimentalWarning "${PROGRAM}" %*\r\n`);
   return true;
 }
 

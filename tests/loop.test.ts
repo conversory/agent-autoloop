@@ -26,6 +26,10 @@ import { after, test } from "node:test";
 
 const home = mkdtempSync(join(tmpdir(), "agent-autoloop-loop-"));
 const bin = join(import.meta.dirname, "..", "bin", "agent-autoloop.ts");
+// This whole loop ran for real on Windows with a signed-in Codex, and its service side is in windows-service.test.ts;
+// what's left here is the macOS and Linux shape of it — file modes as privacy, and a HOME this file fences itself off
+// with that Windows' Node doesn't read, so run there it would write in the real one.
+const unix = process.platform !== "win32";
 // `init` turns on the desktop channel: these stand in for the commands that would really show something.
 const notifiers = join(home, "notifiers");
 const notified = join(home, "notified.txt");
@@ -97,7 +101,7 @@ after(async () => {
   rmSync(home, { recursive: true, force: true });
 });
 
-test("one machine, one command: an event, a question, an answer, the work done", async () => {
+test("one machine, one command: an event, a question, an answer, the work done", { skip: !unix }, async () => {
   const port = await freePort();
   const done = cli("init", "--no-service", "--command", script, "--port", String(port));
   assert.equal(done.status, 0, done.stderr);
@@ -198,26 +202,30 @@ test("one machine, one command: an event, a question, an answer, the work done",
   assert.equal((await fetch(`${url}/`)).status, 404);
 });
 
-test("the user's Agents are shown how to set it up, when this is the install in its usual place, and nothing of theirs is touched", () => {
-  const person = mkdtempSync(join(tmpdir(), "agent-autoloop-person-"));
-  mkdirSync(join(person, ".claude"));
-  mkdirSync(join(person, ".codex", "skills", "agent-autoloop"), { recursive: true });
-  writeFileSync(join(person, ".codex", "skills", "agent-autoloop", "SKILL.md"), "their own");
-  const usual: NodeJS.ProcessEnv = { ...env, HOME: person };
-  delete usual.AGENT_AUTOLOOP_HOME;
-  const done = spawnSync(
-    process.execPath,
-    ["--disable-warning=ExperimentalWarning", bin, "init", "--no-service", "--command", "true"],
-    { env: usual, encoding: "utf8", timeout: 30_000 },
-  );
-  assert.equal(done.status, 0, done.stderr);
-  assert.equal(
-    realpathSync(join(person, ".claude", "skills", "agent-autoloop")),
-    realpathSync(join(import.meta.dirname, "..", "skills", "agent-autoloop")),
-  );
-  assert.ok(lstatSync(join(person, ".claude", "skills", "agent-autoloop")).isSymbolicLink());
-  assert.equal(readFileSync(join(person, ".codex", "skills", "agent-autoloop", "SKILL.md"), "utf8"), "their own");
-  assert.ok(existsSync(join(person, ".agent-autoloop", "config.json")));
-  rmSync(person, { recursive: true, force: true });
-  assert.ok(!existsSync(join(home, ".claude")), "an install somewhere else leaves the user's Agents alone");
-});
+test(
+  "the user's Agents are shown how to set it up, when this is the install in its usual place, and nothing of theirs is touched",
+  { skip: !unix },
+  () => {
+    const person = mkdtempSync(join(tmpdir(), "agent-autoloop-person-"));
+    mkdirSync(join(person, ".claude"));
+    mkdirSync(join(person, ".codex", "skills", "agent-autoloop"), { recursive: true });
+    writeFileSync(join(person, ".codex", "skills", "agent-autoloop", "SKILL.md"), "their own");
+    const usual: NodeJS.ProcessEnv = { ...env, HOME: person };
+    delete usual.AGENT_AUTOLOOP_HOME;
+    const done = spawnSync(
+      process.execPath,
+      ["--disable-warning=ExperimentalWarning", bin, "init", "--no-service", "--command", "true"],
+      { env: usual, encoding: "utf8", timeout: 30_000 },
+    );
+    assert.equal(done.status, 0, done.stderr);
+    assert.equal(
+      realpathSync(join(person, ".claude", "skills", "agent-autoloop")),
+      realpathSync(join(import.meta.dirname, "..", "skills", "agent-autoloop")),
+    );
+    assert.ok(lstatSync(join(person, ".claude", "skills", "agent-autoloop")).isSymbolicLink());
+    assert.equal(readFileSync(join(person, ".codex", "skills", "agent-autoloop", "SKILL.md"), "utf8"), "their own");
+    assert.ok(existsSync(join(person, ".agent-autoloop", "config.json")));
+    rmSync(person, { recursive: true, force: true });
+    assert.ok(!existsSync(join(home, ".claude")), "an install somewhere else leaves the user's Agents alone");
+  },
+);

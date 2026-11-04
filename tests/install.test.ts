@@ -28,6 +28,9 @@ import { after, test } from "node:test";
 
 const repo = join(import.meta.dirname, "..");
 const script = join(repo, "install.sh");
+// install.sh is the macOS and Linux installer; Windows has install.cmd, covered by install-windows.test.ts. This file
+// fences itself off with HOME, which isn't the home Node reads on Windows: run there, it would write in the real one.
+const unix = process.platform !== "win32";
 const dir = realpathSync(mkdtempSync(join(tmpdir(), "agent-autoloop-install-")));
 const copy = join(dir, "the-program");
 for (const part of ["bin", "cli", "host", "kernel", "plugins", "protocol", "skills", "worker", "package.json"]) {
@@ -85,7 +88,7 @@ const made = (place: string) => {
 };
 const isLink = (file: string) => lstatSync(file, { throwIfNoEntry: false })?.isSymbolicLink() === true;
 
-test("installation keeps data private even when its root already exists with mode 0755", () => {
+test("installation keeps data private even when its root already exists with mode 0755", { skip: !unix }, () => {
   const it = computer();
   mkdirSync(it.hub, { mode: 0o755 });
   chmodSync(it.hub, 0o755);
@@ -94,18 +97,22 @@ test("installation keeps data private even when its root already exists with mod
   assert.equal(statSync(it.hub).mode & 0o777, 0o700);
 });
 
-test("the command goes in ~/.local/bin when that's on PATH, even behind another place it could go", () => {
-  const it = computer();
-  const other = made(it.folder("other"));
-  const done = it.run([other, it.local]);
-  assert.equal(done.status, 0, done.stderr);
-  assert.equal(readlinkSync(join(it.local, "agent-autoloop")), it.program);
-  assert.ok(!isLink(join(other, "agent-autoloop")));
-  assert.match(done.stdout, /先运行 agent-autoloop up 启动中台，再开一个终端运行 agent-autoloop try/);
-  assert.doesNotMatch(done.stdout, /alias/);
-});
+test(
+  "the command goes in ~/.local/bin when that's on PATH, even behind another place it could go",
+  { skip: !unix },
+  () => {
+    const it = computer();
+    const other = made(it.folder("other"));
+    const done = it.run([other, it.local]);
+    assert.equal(done.status, 0, done.stderr);
+    assert.equal(readlinkSync(join(it.local, "agent-autoloop")), it.program);
+    assert.ok(!isLink(join(other, "agent-autoloop")));
+    assert.match(done.stdout, /先运行 agent-autoloop up 启动中台，再开一个终端运行 agent-autoloop try/);
+    assert.doesNotMatch(done.stdout, /alias/);
+  },
+);
 
-test("the same goes for dash, which is what sh is on Ubuntu", { skip: !existsSync("/bin/dash") }, () => {
+test("the same goes for dash, which is what sh is on Ubuntu", { skip: !unix || !existsSync("/bin/dash") }, () => {
   const it = computer();
   const done = it.run([it.local], undefined, "/bin/dash");
   assert.equal(done.status, 0, done.stderr);
@@ -113,20 +120,24 @@ test("the same goes for dash, which is what sh is on Ubuntu", { skip: !existsSyn
   assert.doesNotMatch(done.stdout, /alias/);
 });
 
-test("with ~/.local/bin not on PATH it goes in the first place that is, and leaves ~/.local/bin alone", () => {
-  const it = computer();
-  const first = made(it.folder("first"));
-  const second = made(it.folder("second"));
-  const done = it.run(["relative/bin", ".", it.folder("not-there"), first, second]);
-  assert.equal(done.status, 0, done.stderr);
-  assert.equal(readlinkSync(join(first, "agent-autoloop")), it.program);
-  assert.ok(!existsSync(it.local));
-  assert.ok(!isLink(join(second, "agent-autoloop")));
-  assert.match(done.stdout, /agent-autoloop try/);
-  assert.doesNotMatch(done.stdout, /alias/);
-});
+test(
+  "with ~/.local/bin not on PATH it goes in the first place that is, and leaves ~/.local/bin alone",
+  { skip: !unix },
+  () => {
+    const it = computer();
+    const first = made(it.folder("first"));
+    const second = made(it.folder("second"));
+    const done = it.run(["relative/bin", ".", it.folder("not-there"), first, second]);
+    assert.equal(done.status, 0, done.stderr);
+    assert.equal(readlinkSync(join(first, "agent-autoloop")), it.program);
+    assert.ok(!existsSync(it.local));
+    assert.ok(!isLink(join(second, "agent-autoloop")));
+    assert.match(done.stdout, /agent-autoloop try/);
+    assert.doesNotMatch(done.stdout, /alias/);
+  },
+);
 
-test("someone's own agent-autoloop stays as it was, and the next step doesn't send them to it", () => {
+test("someone's own agent-autoloop stays as it was, and the next step doesn't send them to it", { skip: !unix }, () => {
   const it = computer();
   const theirs = made(it.local);
   executable(join(theirs, "agent-autoloop"), "echo their own");
@@ -147,7 +158,7 @@ test("someone's own agent-autoloop stays as it was, and the next step doesn't se
 
 test(
   "with nowhere on PATH to put it, the next step gives the full path and no link is left anywhere",
-  { skip: process.getuid?.() === 0 },
+  { skip: !unix || process.getuid?.() === 0 },
   () => {
     const it = computer();
     const done = it.run([]);
@@ -159,7 +170,7 @@ test(
   },
 );
 
-test("the next step is try alone when a service has been started", () => {
+test("the next step is try alone when a service has been started", { skip: !unix }, () => {
   const it = computer();
   const done = it.run([it.local], ["--command", "true", "--port", "3999"]);
   assert.equal(done.status, 0, done.stderr);
@@ -171,28 +182,32 @@ for (const [node, words] of [
   ["old", /需要 Node\.js 24 或更新，现在是 v22\.1\.0/],
   ["none", /需要 Node\.js 24 或更新，这台电脑上没找到/],
 ] as const) {
-  test(`with Node ${node === "old" ? "too old" : "missing"} it says what to run, and those lines work as written`, () => {
-    const it = computer({ node });
-    const done = it.run([]);
-    assert.equal(done.status, 1);
-    assert.match(done.stdout, words);
-    assert.match(done.stdout, /^ +brew install node@24$/m);
-    assert.match(done.stdout, /^ +nvm install 24$/m);
-    assert.ok(!existsSync(it.hub), "nothing is set up");
-    // The line about PATH, as it's printed, run where `brew --prefix` answers as Homebrew does.
-    const shell = made(it.folder("shell"));
-    executable(join(shell, "brew"), `[ "$*" = "--prefix node@24" ] && echo /homebrew/opt/node@24`);
-    const line = done.stdout.split("\n").find((printed) => printed.includes("brew --prefix"))!;
-    const pasted = spawnSync("/bin/sh", ["-c", line.trim()], {
-      env: { HOME: shell, PATH: shell },
-      encoding: "utf8",
-    });
-    assert.equal(pasted.status, 0, pasted.stderr);
-    assert.equal(readFileSync(join(shell, ".zshrc"), "utf8"), 'export PATH="/homebrew/opt/node@24/bin:$PATH"\n');
-  });
+  test(
+    `with Node ${node === "old" ? "too old" : "missing"} it says what to run, and those lines work as written`,
+    { skip: !unix },
+    () => {
+      const it = computer({ node });
+      const done = it.run([]);
+      assert.equal(done.status, 1);
+      assert.match(done.stdout, words);
+      assert.match(done.stdout, /^ +brew install node@24$/m);
+      assert.match(done.stdout, /^ +nvm install 24$/m);
+      assert.ok(!existsSync(it.hub), "nothing is set up");
+      // The line about PATH, as it's printed, run where `brew --prefix` answers as Homebrew does.
+      const shell = made(it.folder("shell"));
+      executable(join(shell, "brew"), `[ "$*" = "--prefix node@24" ] && echo /homebrew/opt/node@24`);
+      const line = done.stdout.split("\n").find((printed) => printed.includes("brew --prefix"))!;
+      const pasted = spawnSync("/bin/sh", ["-c", line.trim()], {
+        env: { HOME: shell, PATH: shell },
+        encoding: "utf8",
+      });
+      assert.equal(pasted.status, 0, pasted.stderr);
+      assert.equal(readFileSync(join(shell, ".zshrc"), "utf8"), 'export PATH="/homebrew/opt/node@24/bin:$PATH"\n');
+    },
+  );
 }
 
-test("running it again updates and doesn't set anything up over what's there", () => {
+test("running it again updates and doesn't set anything up over what's there", { skip: !unix }, () => {
   const it = computer();
   assert.equal(it.run([it.local]).status, 0);
   writeFileSync(join(it.hub, "rules.json"), "my rules");
