@@ -1,5 +1,6 @@
 // `agent-autoloop uninstall`: takes away what the install put on this computer and nothing else. A link is ours only if it really
 // leads to this program: someone else's agent-autoloop, or a folder of their own by that name, stays where it is.
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync, readlinkSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -34,7 +35,15 @@ function removeCmd(place: string, program: string) {
     return;
   }
   if (!said.includes(program)) return;
-  rmSync(shim, { force: true });
+  // cmd.exe reads a batch file as it goes, so deleting the one this very command is running from cuts it off mid-word
+  // ("The batch file cannot be found"). A hidden cmd of its own takes the file away once this one has finished.
+  const delayed = spawn("cmd.exe", ["/d", "/s", "/c", `ping -n 3 127.0.0.1 >nul & del "${shim}"`], {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+    windowsVerbatimArguments: true,
+  });
+  delayed.unref();
   console.log(`删掉了 ${shim}`);
 }
 
