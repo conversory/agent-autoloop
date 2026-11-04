@@ -113,38 +113,44 @@ test("a hub gone without cleanup is not its number, and is brought back", { skip
   await wait(() => runningUp() !== null && runningUp() !== pid, 20, "the watchdog to bring it back");
 });
 
-test("the uninstaller takes its own command and its own junction, and no one else's anything", { skip: !only }, () => {
-  const dir = path.join(tmpdir(), `agent-autoloop-uninstall-${Date.now()}`);
-  const program = path.join(import.meta.dirname, "..", "bin", "agent-autoloop.ts");
-  const skills = path.join(import.meta.dirname, "..", "skills", "agent-autoloop");
-  const mine = path.join(dir, "mine");
-  const theirs = path.join(dir, "theirs");
-  for (const place of [mine, theirs]) mkdirSync(place, { recursive: true });
-  writeFileSync(
-    path.join(mine, "agent-autoloop.cmd"),
-    `@echo off\r\n"<a node>" --disable-warning=ExperimentalWarning "${program}" %*\r\n`,
-  );
-  writeFileSync(
-    path.join(theirs, "agent-autoloop.cmd"),
-    `@echo off\r\n"<a node>" --disable-warning=ExperimentalWarning "${path.join(dir, "elsewhere")}" %*\r\n`,
-  );
-  const skill = path.join(dir, ".claude", "skills", "agent-autoloop");
-  mkdirSync(path.dirname(skill), { recursive: true });
-  symlinkSync(skills, skill, "junction");
-  const done = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", program, "uninstall", "--yes"], {
-    encoding: "utf8",
-    timeout: 60_000,
-    env: {
-      ...process.env,
-      AGENT_AUTOLOOP_HOME: path.join(dir, "home"),
-      USERPROFILE: dir,
-      PATH: `${mine}${path.delimiter}${theirs}${path.delimiter}${process.env.PATH}`,
-    },
-  });
-  assert.equal(done.status, 0, done.stderr);
-  assert.ok(!existsSync(path.join(mine, "agent-autoloop.cmd")), "our command stayed");
-  assert.ok(existsSync(path.join(theirs, "agent-autoloop.cmd")), "someone else's command was taken");
-  assert.ok(!existsSync(skill), "the junction stayed");
-  assert.ok(existsSync(skills), "what the junction pointed at was emptied");
-  rmSync(dir, { recursive: true, force: true });
-});
+test(
+  "the uninstaller takes its own command and its own junction, and no one else's anything",
+  { skip: !only },
+  async () => {
+    const dir = path.join(tmpdir(), `agent-autoloop-uninstall-${Date.now()}`);
+    const program = path.join(import.meta.dirname, "..", "bin", "agent-autoloop.ts");
+    const skills = path.join(import.meta.dirname, "..", "skills", "agent-autoloop");
+    const mine = path.join(dir, "mine");
+    const theirs = path.join(dir, "theirs");
+    for (const place of [mine, theirs]) mkdirSync(place, { recursive: true });
+    writeFileSync(
+      path.join(mine, "agent-autoloop.cmd"),
+      `@echo off\r\n"<a node>" --disable-warning=ExperimentalWarning "${program}" %*\r\n`,
+    );
+    writeFileSync(
+      path.join(theirs, "agent-autoloop.cmd"),
+      `@echo off\r\n"<a node>" --disable-warning=ExperimentalWarning "${path.join(dir, "elsewhere")}" %*\r\n`,
+    );
+    const skill = path.join(dir, ".claude", "skills", "agent-autoloop");
+    mkdirSync(path.dirname(skill), { recursive: true });
+    symlinkSync(skills, skill, "junction");
+    const done = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", program, "uninstall", "--yes"], {
+      encoding: "utf8",
+      timeout: 60_000,
+      env: {
+        ...process.env,
+        AGENT_AUTOLOOP_HOME: path.join(dir, "home"),
+        USERPROFILE: dir,
+        PATH: `${mine}${path.delimiter}${theirs}${path.delimiter}${process.env.PATH}`,
+      },
+    });
+    assert.equal(done.status, 0, done.stderr);
+    // The command's own cmd takes the .cmd away a moment after the uninstaller has said its last word.
+    await wait(() => !existsSync(path.join(mine, "agent-autoloop.cmd")), 10, "the command to be taken away");
+    assert.ok(!existsSync(path.join(mine, "agent-autoloop.cmd")), "our command stayed");
+    assert.ok(existsSync(path.join(theirs, "agent-autoloop.cmd")), "someone else's command was taken");
+    assert.ok(!existsSync(skill), "the junction stayed");
+    assert.ok(existsSync(skills), "what the junction pointed at was emptied");
+    rmSync(dir, { recursive: true, force: true });
+  },
+);
