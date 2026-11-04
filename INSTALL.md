@@ -4,11 +4,13 @@
 
 ## 安装
 
-支持 macOS、Linux，暂不支持 Windows。需要 Node.js 24 或更新、Git、curl，以及一个已经登录的命令行 Agent。
+支持 macOS、Linux、Windows。需要 Node.js 24 或更新、Git、curl（Windows 10 起自带），以及一个已经登录的命令行 Agent。
 
 先检查 `node --version`。Homebrew 的 `node@24` 默认不进 PATH，装好后还要运行 `export PATH="$(brew --prefix node@24)/bin:$PATH"`；需要长期生效时再写入用户的 shell 配置。不要替用户登录，也不要读取或复制登录凭据。
 
-本仓库已公开，安装脚本和代码都可匿名下载，不需要 GitHub 账号、登录或 GitHub CLI（`gh`）。下面的命令安装并启用登录后常驻服务：
+Windows 上不要动系统 Node：`install.cmd` 先用 `%AGENT_AUTOLOOP_NODE%` 指定的 Node，再找 `%LOCALAPPDATA%\agent-autoloop\node-v*` 里给这个用户单独配的 Node 24，都不行时打印三条可直接粘贴进 CMD 的命令，把 Node 24 解压到该用户目录。不要替用户改 `PATH` 系统环境变量。
+
+本仓库已公开，安装脚本和代码都可匿名下载，不需要 GitHub 账号、登录或 GitHub CLI（`gh`）。macOS / Linux 用下面的命令安装并启用登录后常驻服务：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/KKKKhazix/agent-autoloop/main/install.sh | sh
@@ -25,6 +27,15 @@ AGENT_AUTOLOOP_REPO=/path/to/agent-autoloop sh /path/to/agent-autoloop/install.s
 ```
 
 `--agent claude` 选择 Claude Code；只有其他 CLI 时加 `--command 'hermes chat -q {prompt}'`。不指定时会检测本机安装的 Agent，第一种作为试跑对象。
+
+Windows 在 CMD 里逐行运行（本地仓库以 `E:\Try\agent-autoloop` 为例，用已经登录的 Codex）：
+
+```cmd
+set AGENT_AUTOLOOP_REPO=E:\Try\agent-autoloop
+E:\Try\agent-autoloop\install.cmd --agent codex
+```
+
+从 GitHub 安装就先把仓库 `git clone` 到一个临时目录，再把 `AGENT_AUTOLOOP_REPO` 指向它、运行其中的 `install.cmd`。安装器会把命令 `agent-autoloop.cmd` 放进 PATH 中的 `%LOCALAPPDATA%\Microsoft\WindowsApps`，没有就依次试 `%LOCALAPPDATA%`、用户目录和 PATH 上第一个可写目录，不覆盖别人的同名命令。登录自启写当前用户的 Run 键并带一个看门狗进程，全程不需要管理员。
 
 程序装进 `~/.agent-autoloop/app`，配置和记录留在 `~/.agent-autoloop`。默认打开桌面通知；没有图形会话时安静跳过，问题仍能用 `agent-autoloop status` 查看。命令优先放在 PATH 中的 `~/.local/bin`，否则选 PATH 里第一个可写目录，不用 sudo、不覆盖其他程序；没有位置时使用安装器打印的完整路径。
 
@@ -44,7 +55,7 @@ AGENT_AUTOLOOP_REPO=/path/to/agent-autoloop sh /path/to/agent-autoloop/install.s
 agent-autoloop up
 ```
 
-`up` 会一直运行。在 Agent 的命令工具里保留它返回的运行中会话，再用另一条命令完成验证；不要用 `nohup … &` 代替，命令工具可能在退出时清理后台进程。看到监听地址后再运行验证命令；启动失败就先处理该会话里的错误。
+`up` 会一直运行。在 Agent 的命令工具里保留它返回的运行中会话，再用另一条命令完成验证；不要用 `nohup … &` 代替，命令工具可能在退出时清理后台进程。看到监听地址后再运行验证命令；启动失败就先处理该会话里的错误。Windows 上把安装命令换成 `%TEMP%\agent-autoloop\install.cmd --agent codex --no-service --port <端口>`，其余相同。
 
 PATH 没有命令时，把 `agent-autoloop` 换成安装器打印的完整路径。临时测试使用假的 `osascript`、`notify-send`，不要发送真实消息；不要给已在线的飞书应用再开监听。
 

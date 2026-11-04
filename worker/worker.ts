@@ -33,6 +33,9 @@ const TIMEOUT_MINUTES = 180;
 const GRACE = 30_000;
 /** A process told to stop is given this long. */
 const STOP_GRACE = 10_000;
+const WINDOWS = process.platform === "win32";
+/** How long without a sitter's heartbeat, or without its first one, before its run counts as alone. */
+const BEAT_LIFE = 15_000;
 const REPAIRS = 2;
 const KEEP_DAYS = 14;
 const WAIT = 50;
@@ -101,10 +104,14 @@ const files = (entry: Entry) => ({
   out: path.join(entry.dir, `stdout-${entry.turn}.log`),
   err: path.join(entry.dir, `stderr-${entry.turn}.log`),
   exit: path.join(entry.dir, `exit-${entry.turn}`),
+  // Where the Windows sitter says it's alive and where the worker says stop; unmade elsewhere.
+  beat: path.join(entry.dir, `beat-${entry.turn}`),
+  stop: path.join(entry.dir, `stop-${entry.turn}`),
 });
 const marker = (entry: Entry) => `agent-autoloop-run:${entry.run}:${entry.attempt}:${entry.turn}`;
 
 function alive(entry: Entry) {
+  if (WINDOWS) return sitterAlive(entry);
   if (!entry.pid) return false;
   try {
     const command = execFileSync("ps", ["-p", String(entry.pid), "-o", "command="], { encoding: "utf8" });
@@ -114,13 +121,59 @@ function alive(entry: Entry) {
   }
 }
 
+/** The process is there, as far as this process can tell without a shell: on Windows this is how a pid is probed. */
+function pidAlive(pid?: number) {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A Windows run is alive while its sitter keeps saying so. A heartbeat a moment old covers a slow disk or a machine
+ *  that has just woken up: the pid is asked too, because a number alone proves nothing either way. `starting` lends a
+ *  run not yet running its wait for a first heartbeat; a run being stopped has had its chance. */
+function sitterAlive(entry: Entry, starting = true) {
+  const moment = Date.now();
+  try {
+    return moment - statSync(files(entry).beat).mtimeMs < BEAT_LIFE || pidAlive(entry.pid);
+  } catch {
+    // No heartbeat yet: the sitter may still be starting, or never started at all.
+    return (starting && entry.launchedAt !== undefined && moment - entry.launchedAt < BEAT_LIFE) || pidAlive(entry.pid);
+  }
+}
+
+/** A stuck sitter — one that keeps saying it's alive without minding a stop — is ended with its tree, but only while
+ *  its heartbeat really is this run's: a number alone could be someone else's by now, and no heartbeat at all is no
+ *  one's to say. */
+function killSitter(entry: Entry) {
+  try {
+    if (Date.now() - statSync(files(entry).beat).mtimeMs > 60_000) return;
+  } catch {
+    return;
+  }
+  try {
+    execFileSync("taskkill", ["/PID", String(entry.pid), "/T", "/F"], { stdio: "ignore" });
+  } catch {}
+}
+
 function signal(entry: Entry, name: NodeJS.Signals) {
+  if (WINDOWS) {
+    // The sitter reads this file and stops the agent's whole tree, the way a signal went to a process group.
+    try {
+      writeFileSync(files(entry).stop, name === "SIGKILL" ? "force" : "term");
+    } catch {}
+    return;
+  }
   try {
     if (entry.pid) process.kill(-entry.pid, name);
   } catch {}
 }
 
-function groupAlive(entry: Entry) {
+function groupAlive(entry: Entry, starting = true) {
+  if (WINDOWS) return sitterAlive(entry, starting);
   // The wrapper can die before a child; zombies have already stopped and only their parent can reap them.
   return execFileSync("ps", ["-ax", "-o", "pgid=", "-o", "stat="], { encoding: "utf8" })
     .trim()
@@ -181,7 +234,7 @@ export function createWorker({
     delete entry.why;
     save(entry);
     const { rule, agent } = entry.job;
-    const cwd = rule.cwd.replace(/^~(?=\/)/, homedir());
+    const cwd = rule.cwd.replace(/^~(?=[\\/])/, homedir());
     const turn: Turn = {
       prompt,
       session: entry.session,
@@ -196,7 +249,34 @@ export function createWorker({
     };
     if (!existsSync(cwd)) throw new Error(`在 ${cwd} 启动不了：这个目录不存在`);
     const argv = adapter.command(turn);
-    const { out, err, exit } = files(entry);
+    const turnFiles = files(entry);
+    const { out, err, exit } = turnFiles;
+    if (WINDOWS) {
+      // The sitter stands where the shell script stands elsewhere: it redirects, heartbeats, stops trees, publishes.
+      for (const file of [exit, turnFiles.beat, turnFiles.stop]) rmSync(file, { force: true });
+      const child = spawn(
+        process.execPath,
+        [
+          "--disable-warning=ExperimentalWarning",
+          path.join(import.meta.dirname, "sitter.ts"),
+          out,
+          err,
+          exit,
+          turnFiles.beat,
+          turnFiles.stop,
+          cwd,
+          "--",
+          ...argv,
+        ],
+        { cwd, env: agentEnvironment(entry), detached: true, stdio: "ignore", windowsHide: true },
+      );
+      child.on("error", (error) => log(`run ${entry.run}: ${error}`));
+      child.unref();
+      entry.pid = child.pid;
+      save(entry);
+      log(`run ${entry.run} (${rule.name}) turn ${entry.turn} started, pid ${child.pid}`);
+      return;
+    }
     // Output and the exit code go through the shell, so they land in their files even if this program has gone by then.
     const script = [
       "out=$1",
@@ -353,8 +433,11 @@ export function createWorker({
     }
     const { exit } = files(entry);
     if (entry.stopping !== undefined) {
-      if (groupAlive(entry)) {
+      // A run being stopped gets no starting excuse: what's gone is gone, even freshly after a launch.
+      if (groupAlive(entry, false)) {
         if (now() - entry.stopping > STOP_GRACE) signal(entry, "SIGKILL");
+        // A sitter that ignores even a force has its tree taken down, the way a group that ignored SIGKILL would.
+        if (WINDOWS && now() - entry.stopping > 3 * STOP_GRACE) killSitter(entry);
         return;
       }
       return conclude(entry, adapter, existsSync(exit) ? Number(readFileSync(exit, "utf8").trim()) : null);

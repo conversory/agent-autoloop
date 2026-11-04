@@ -10,7 +10,17 @@ export function setup(name: string, rules = "rules.fixture.json") {
   process.env.AGENT_AUTOLOOP_HOME = directory;
   process.env.AGENT_AUTOLOOP_RULES = rules.startsWith("/") ? rules : join(import.meta.dirname, rules);
   process.env.AGENT_AUTOLOOP_PUBLIC_URL = "https://hub.test";
-  after(() => rmSync(directory, { recursive: true, force: true }));
+  // Windows keeps hold of a folder a just-stopped child was working in, so give it a moment before leaving the folder
+  // behind; on the other systems the first try already works.
+  after(() => {
+    for (let tries = 0; tries < 25; tries++) {
+      try {
+        rmSync(directory, { recursive: true, force: true });
+        return;
+      } catch {}
+      if (tries < 24) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 200);
+    }
+  });
   return directory;
 }
 

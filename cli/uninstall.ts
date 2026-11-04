@@ -1,6 +1,6 @@
 // `agent-autoloop uninstall`: takes away what the install put on this computer and nothing else. A link is ours only if it really
 // leads to this program: someone else's agent-autoloop, or a folder of their own by that name, stays where it is.
-import { existsSync, lstatSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readlinkSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { HOME } from "../host/home.ts";
@@ -9,21 +9,46 @@ import { removeService, stopUp } from "../host/service.ts";
 const ROOT = path.join(import.meta.dirname, "..");
 
 function removeLink(link: string, target: string) {
-  if (!lstatSync(link, { throwIfNoEntry: false })?.isSymbolicLink()) return;
+  // Only a link of ours to remove: on Windows the skill link is a junction, which a symlink check alone would miss.
+  try {
+    readlinkSync(link);
+  } catch {
+    return;
+  }
   try {
     if (realpathSync(link) !== realpathSync(target)) return;
   } catch {
     return; // It leads nowhere, so not here.
   }
-  rmSync(link);
+  rmSync(link, { recursive: true });
   console.log(`删掉了 ${link}`);
+}
+
+/** The Windows installer leaves a .cmd that names this program in its own words; that text is what makes it ours. */
+function removeCmd(place: string, program: string) {
+  const shim = path.join(place, "agent-autoloop.cmd");
+  let said = "";
+  try {
+    said = readFileSync(shim, "utf8");
+  } catch {
+    return;
+  }
+  if (!said.includes(program)) return;
+  rmSync(shim, { force: true });
+  console.log(`删掉了 ${shim}`);
 }
 
 function removeLinks() {
   const program = path.join(ROOT, "bin", "agent-autoloop.ts");
   const onPath = (process.env.PATH ?? "").split(path.delimiter).filter((place) => path.isAbsolute(place));
-  const places = [path.join(homedir(), ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin", ...onPath];
-  for (const place of new Set(places)) removeLink(path.join(place, "agent-autoloop"), program);
+  if (process.platform === "win32") {
+    const local = process.env.LOCALAPPDATA ?? "";
+    const places = [path.join(local, "Microsoft", "WindowsApps"), local, homedir(), ...onPath];
+    for (const place of new Set(places)) removeCmd(place, program);
+  } else {
+    const places = [path.join(homedir(), ".local", "bin"), "/opt/homebrew/bin", "/usr/local/bin", ...onPath];
+    for (const place of new Set(places)) removeLink(path.join(place, "agent-autoloop"), program);
+  }
   const skill = path.join(ROOT, "skills", "agent-autoloop");
   for (const agent of [".claude", ".codex"]) removeLink(path.join(homedir(), agent, "skills", "agent-autoloop"), skill);
 }

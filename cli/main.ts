@@ -107,12 +107,26 @@ function linkSkill() {
     const link = path.join(homedir(), agent, "skills", "agent-autoloop");
     if (lstatSync(link, { throwIfNoEntry: false })) continue;
     mkdirSync(path.dirname(link), { recursive: true });
-    symlinkSync(path.join(ROOT, "skills", "agent-autoloop"), link);
+    const target = path.join(ROOT, "skills", "agent-autoloop");
+    // A junction needs no privilege on Windows, where a plain symlink would ask for one.
+    if (process.platform === "win32") symlinkSync(target, link, "junction");
+    else symlinkSync(target, link);
   }
 }
 
 /** What to type to run this program: its name if that's what a shell finds, otherwise where it is. */
 function howToRun() {
+  if (process.platform === "win32") {
+    // The name works when something on PATH runs this install, which is what the installer's .cmd is.
+    for (const place of (process.env.PATH ?? "").split(path.delimiter)) {
+      if (!place || !path.isAbsolute(place)) continue;
+      const shim = path.join(place, "agent-autoloop.cmd");
+      try {
+        if (readFileSync(shim, "utf8").includes(PROGRAM)) return "agent-autoloop";
+      } catch {}
+    }
+    return `"${process.execPath}" --disable-warning=ExperimentalWarning "${PROGRAM}"`;
+  }
   const found = spawnSync("/bin/sh", ["-c", "command -v agent-autoloop"], { encoding: "utf8" }).stdout.trim();
   if (found && realpathSync(found) === realpathSync(PROGRAM)) return "agent-autoloop";
   return /\s/.test(PROGRAM) ? `'${PROGRAM}'` : PROGRAM;

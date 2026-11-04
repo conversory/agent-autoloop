@@ -1,9 +1,8 @@
 // Claude Code: the user's own, installed and signed in by them. This only ever runs the official program.
-import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { findProgram, tail, type Adapter } from "../../worker/agents.ts";
+import { capture, findProgram, tail, type Adapter } from "../../worker/agents.ts";
 
 const PERMISSIONS = { read: "plan", edit: "acceptEdits", full: "bypassPermissions" };
 
@@ -65,7 +64,7 @@ export default {
   check() {
     try {
       const program = findProgram("claude", inTheApp);
-      const status = JSON.parse(execFileSync(program, ["auth", "status"], { encoding: "utf8", timeout: 20_000 }));
+      const status = JSON.parse(capture(program, ["auth", "status"]));
       return status.loggedIn ? null : "Claude Code 没有登录：运行 claude auth login";
     } catch (error) {
       return `Claude Code 用不了：${(error as Error).message.split("\n")[0]}`;

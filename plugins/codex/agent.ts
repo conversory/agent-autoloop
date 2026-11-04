@@ -1,7 +1,8 @@
 // Codex: the user's own, installed and signed in by them. A run is a `codex exec` in the background; its thread is kept
 // on disk, so a retry or an answer can go on in it, and the link opens it in the app.
-import { execFileSync } from "node:child_process";
-import { findProgram, tail, type Adapter } from "../../worker/agents.ts";
+import { existsSync, readdirSync, statSync } from "node:fs";
+import path from "node:path";
+import { capture, findProgram, tail, type Adapter } from "../../worker/agents.ts";
 
 const SANDBOX = { read: "read-only", edit: "workspace-write", full: "danger-full-access" };
 const IN_THE_APP = [
@@ -9,9 +10,21 @@ const IN_THE_APP = [
   "/Applications/Codex.app/Contents/Resources/codex",
 ];
 
+/** The Windows desktop app keeps a copy per release; the unversioned one can be older than the user's config. */
+function windowsInTheApp() {
+  const bin = path.join(process.env.LOCALAPPDATA ?? "", "OpenAI", "Codex", "bin");
+  if (!existsSync(bin)) return [];
+  const kept = readdirSync(bin)
+    .filter((name) => existsSync(path.join(bin, name, "codex.exe")))
+    .sort((a, b) => statSync(path.join(bin, b, "codex.exe")).mtimeMs - statSync(path.join(bin, a, "codex.exe")).mtimeMs)
+    .map((name) => path.join(bin, name, "codex.exe"));
+  return kept.concat([path.join(bin, "codex.exe")]);
+}
+const inTheApp = () => (process.platform === "win32" ? windowsInTheApp() : IN_THE_APP);
+
 export default {
   command: (turn) => [
-    findProgram("codex", () => IN_THE_APP),
+    findProgram("codex", inTheApp),
     "exec",
     ...(turn.resume ? ["resume"] : []),
     "--json",
@@ -66,11 +79,7 @@ export default {
   link: (session) => `codex://threads/${session}`,
   check() {
     try {
-      execFileSync(
-        findProgram("codex", () => IN_THE_APP),
-        ["login", "status"],
-        { encoding: "utf8", timeout: 20_000, stdio: ["ignore", "pipe", "pipe"] },
-      );
+      capture(findProgram("codex", inTheApp), ["login", "status"]);
       return null;
     } catch (error) {
       return `Codex 没有登录或用不了：运行 codex login（${(error as Error).message.split("\n")[0]}）`;
